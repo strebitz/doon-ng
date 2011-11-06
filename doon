@@ -1,6 +1,8 @@
 #!/bin/bash
+
 OPTIND=1
 FILES=()
+RFILES=()
 COMMANDS=()
 ERRORCOUNT=0
 NSERVER=()
@@ -8,169 +10,119 @@ SERVERS=()
 LIST="FALSE"
 LISTG="FALSE"
 TARGET="FALSE"
-PARALLEL="FALSE"
-TIMESTAMP="$(date +%Y%m%d%H%M%S)"
-GROUPS_FILE="/etc/clustershell/groups"
+VERBOSE="FALSE"
+GROUPS_FILE="/etc/doon-groups"
 
-while getopts ":c:g:G:n:N:f:psrlaA" opt; do
+[ -f "$GROUPS_FILE" ] || echo "The cluster groups definition file '$GROUPS_FILE' does not exist!"; exit 1
+
+while getopts ":c:g:G:n:N:f:srlaAhv" opt; do
   case $opt in
     a)
-    for line in "$(awk -F: '{print $2}' $GROUPS_FILE | awk '{sub(/^[ \t]+/, ""); print}')"; do
-  SERVERS=( "${SERVERS[@]}" "$line" )
-  done
-;;
+      for line in "$(awk -F: '{print $2}' $GROUPS_FILE | awk '{sub(/^[ \t]+/, ""); print}')"; do
+        SERVERS=( "${SERVERS[@]}" "$line" )
+      done
+      ;;
     A)
-LISTG="TRUE"
-;;
+      LISTG="TRUE"
+      ;;
     n)
-    SERVERS=( "${SERVERS[@]}" "$OPTARG" )
-;;
+      SERVERS=( "${SERVERS[@]}" "$OPTARG" )
+      ;;
     N)
-    SERVERS=( `comm -23 <(echo "${SERVERS[@]}" | sed 's/ /\n/g' | sort -u ) <(echo "$OPTARG" | sed 's/ /\n/g' | sort -u)`)
-;;
+      SERVERS=( `comm -23 <(echo "${SERVERS[@]}" | sed 's/ /\n/g' | sort -u ) <(echo "$OPTARG" | sed 's/ /\n/g' | sort -u)`)
+      ;;
     g)
-    SERVERS=( "${SERVERS[@]}" "$(grep ^${OPTARG} $GROUPS_FILE | awk -F: '{print $2}' | awk '{sub(/^[ \t]+/, ""); print}')" )
-;;
+      SERVERS=( "${SERVERS[@]}" "$(grep ^${OPTARG} $GROUPS_FILE | awk -F: '{print $2}' | awk '{sub(/^[ \t]+/, ""); print}')" )
+      ;;
     G)
-    NSERVER=( "$(grep ^${OPTARG} $GROUPS_FILE | awk -F: '{print $2}' | awk '{sub(/^[ \t]+/, ""); print}')" )
-    SERVERS=( `comm -23 <(echo "${SERVERS[@]}" | sed 's/ /\n/g' | sort -u ) <(echo "${NSERVER[@]}" | sed 's/ /\n/g' | sort -u)`)
-;;
+      NSERVER=( "$(grep ^${OPTARG} $GROUPS_FILE | awk -F: '{print $2}' | awk '{sub(/^[ \t]+/, ""); print}')" )
+      SERVERS=( `comm -23 <(echo "${SERVERS[@]}" | sed 's/ /\n/g' | sort -u ) <(echo "${NSERVER[@]}" | sed 's/ /\n/g' | sort -u)`)
+      ;;
     c)
-    COMMANDS=( "${COMMANDS[@]}" "$OPTARG" )
-;;
-    p)
-    PARALLEL="TRUE"
-;;
+      COMMANDS=( "${COMMANDS[@]}" "$OPTARG" )
+      ;;
     f)
-    FILES=( "${FILES[@]}" "$OPTARG" )
-;;
+      FILES=( "${FILES[@]}" "$OPTARG" )
+      ;;
     s)
-    TARGET="REMOTE"
-;;
+      TARGET="REMOTE"
+      ;;
     r)
-    TARGET="LOCAL"
-;;
+      TARGET="LOCAL"
+      ;;
     l)
-    LIST="TRUE"
-;;
+      LIST="TRUE"
+      ;;
+    v)
+      VERBOSE="TRUE"
+      ;;
+    h)
+      echo "Usage: doon-ng [-a] [-A] [-n |-N  NODE] [-g |-G GROUP] [-c COMMAND(S) |-f FILE] [-r |-s] [-l]"
+      echo " -a: adds all nodes from all known groups to your selection"
+      echo " -A: prints a list of all available groups and servers assigned to them"
+      echo " -n: node to add to your selection; you can enter one node name per argument - multiple arguments are allowed"
+      echo " -N: node to be removed from your selection; you can enter one node name per argument - multiple arguments are allowed"
+      echo " -g: group of servers to add to your selection; you can enter one group name per argument - multiple arguments are allowed"
+      echo " -G: group of servers to be removed from your selection; you can enter one node name per argument - multiple arguments are allowed"
+      echo " -c: command you whish to execute on the remote hosts - multiple arguments allowed; multiple commads allowed in one argument"
+      echo "     pay attention to quote correctly!!!!"
+      echo " -f: the file you like to transfer to or from server(s); one file per argument - multiple arguments allowed"
+      echo " -s: sends the files to your home directory on remote servers in combination with -f"
+      echo " -r: receives the files from remote servers in combination with -f and stores them in ~/scp-local-copy/\$server/"
+      echo " -l: prints a list of selected commands, files and servers"
+      echo " -v: be verbose"
+      exit 0
+      ;;
     \?)
-echo "Invalid option: -$OPTARG" >&2
-ERRORCOUNT=1
-;;
+      echo "Invalid option: -$OPTARG" >&2
+      exit 1
+      ;;
     :)
-echo "Option -$OPTARG requires an argument." >&2
-ERRORCOUNT=1
-;;
+      echo "Option -$OPTARG requires an argument." >&2
+      exit 1
+      ;;
   esac
 done
-echo
-# run commands
-if [ $ERRORCOUNT -eq 0 ] && [ "${COMMANDS[*]}" != "" ]; then
-  for server in $(eval echo \${SERVERS[*]}); do
-    # if running in parallel; start screen session
-    [ "$PARALLEL" = "TRUE" ] && screen -d -m -S "doon-ng_$server-$TIMESTAMP"
-      for (( i = 0 ; i < ${#COMMANDS[@]} ; i++ )); do
-        if [ "$PARALLEL" = "TRUE" ]; then
-  # if we do not execute the first command; open a new window inside the screen session
-  [ $i -ne 0 ] && screen -X -S "doon-ng_$server-$TIMESTAMP" screen -t cmd-$i $i
-  # run the command inside the corresponding window of the screen session: cmd-0 in window-0, cmd-1 in window-1, etc.
-  screen -X -S "doon-ng_$server-$TIMESTAMP" -p $i stuff "ssh $server '${COMMANDS[$i]}'; exit
-  " #leave this quote for correct syntax!!!
-        else
-  # run all commands on all servers in serial
-      echo "************ $server ************"
-  ssh $server "${COMMANDS[$i]}"
-  echo
-  echo
-        fi
-      done
-  done
-# send files to remote servers
-elif [ $ERRORCOUNT -eq 0 ] && [ "${FILES[*]}" != "" ] && [ "$TARGET" = "REMOTE" ]; then
-  for server in $(eval echo \${SERVERS[*]}); do
-    # if running in parallel; start screen session
-    [ "$PARALLEL" = "TRUE" ] && screen -d -m -S "doon-ng_$server-$TIMESTAMP"
-      for (( i = 0 ; i < ${#FILES[@]} ; i++ )); do
-        if [ "$PARALLEL" = "TRUE" ]; then
-  # if we do not execute the first command; open a new window inside the screen session
-  [ $i -ne 0 ] && screen -X -S "doon-ng_$server-$TIMESTAMP" screen -t cmd-$i $i
-  # run the command inside the corresponding window of the screen session: cmd-0 in window-0, cmd-1 in window-1, etc.
-  screen -X -S "doon-ng_$server-$TIMESTAMP" -p $i stuff "scp -r ${FILES[$i]} $server:~/; exit
-  " #leave this quote for correct syntax!!!
-        else
-      echo "************ $server ************"
-  scp -r "${FILES[$i]}" "$server:~/"
-      echo
-      echo
-        fi
-      done
-  done
-# receive files from remote servers
-elif [ $ERRORCOUNT -eq 0 ] && [ "${FILES[*]}" != "" ] && [ "$TARGET" = "LOCAL" ]; then
-  for server in $(eval echo \${SERVERS[*]}); do
-    # if running in parallel; start screen session
-    [ "$PARALLEL" = "TRUE" ] && screen -d -m -S "doon-ng_$server-$TIMESTAMP"
-    # create local repository for received files if not yet done
-    test ! -d ~/scp-local-copy/"$server"/ && mkdir -p ~/scp-local-copy/$server/
-    test -d ~/scp-local-copy/"$server"/ && for (( i = 0 ; i < ${#FILES[@]} ; i++ )); do
-        if [ "$PARALLEL" = "TRUE" ]; then
-  # if we do not execute the first command; open a new window inside the screen session
-  [ $i -ne 0 ] && screen -X -S "doon-ng_$server-$TIMESTAMP" screen -t cmd-$i $i
-  # run the command inside the corresponding window of the screen session: cmd-o in windows-0, cmd-1 in window-1, etc.
-  screen -X -S "doon-ng_$server-$TIMESTAMP" -p $i stuff "scp -r $server:${FILES[$i]} ~/scp-local-copy/$server/; exit
-  " #leave this quote for correct syntax!!!
-        else
-      echo "************ $server ************"
-  scp -r "$server:${FILES[$i]}" ~/scp-local-copy/"$server/"
-  echo
-  echo
-        fi
-      done
-  done
-# handle error on missing arguments for file transfers
-elif [ $ERRORCOUNT -eq 0 ] && [ "${FILES[*]}" != "" ] && [ "$TARGET" = "FALSE" ]; then
-  echo
-  echo "ERROR: you attempted to copy the follwing file(s)..."
-  for (( i = 0 ; i < ${#FILES[@]} ; i++ )); do
-    echo "${FILES[$i]}"
-  done
-  echo
-  echo "...to or from the follwing server(s) without mentioning a target:"
-  for server in $(eval echo \${SERVERS[*]}); do
-    echo "$server"
-  done
-  echo
-  echo "Please specify a target with the options [-s|-r] for sending or receiving files."
-# list the selected servers for informational purposes
-elif [ $ERRORCOUNT -eq 0 ] && [ "$LIST" = "TRUE" ]; then
-  COUNTER=0
-  echo "List of selected server(s):"
-  for server in $(eval echo \${SERVERS[*]}); do
-    echo "$server"
-    let COUNTER="$COUNTER + 1"
-  done
-  echo
-  echo "($COUNTER server/s)"
+
+
 # list available groups and assignes servers
-elif [ $ERRORCOUNT -eq 0 ] && [ "$LISTG" = "TRUE" ]; then
+if [ "$LISTG" = "TRUE" ]; then
   echo "Available groups in $GROUPS_FILE:"
   cat $GROUPS_FILE
-# handle all other requests and conditions with a general error and usage message
+
+# run commands
+elif [ "${#SERVERS[@]}" -gt 0 ]; then
+  # rewrite the commands array - execute all commands in one SSH session
+  [ "${#COMMANDS[@]}" -ne 0 ] && COMMANDS=( "$(for command in "${COMMANDS[@]}"; do echo ${command}\;; done)" )
+
+  # list all comands, files and servers in the selection
+  [ "$LIST" = "TRUE" ] && [ "${#COMMANDS[@]}" -ne 0 ] && echo "List of commands:" && for command in "${COMMANDS[@]}"; do echo "${command}"; done && echo
+  [ "$LIST" = "TRUE" ] && [ "${#FILES[@]}" -ne 0 ] && echo "List of files:" && for file in "${FILES[@]}"; do echo "${file}"; done && echo
+  [ "$LIST" = "TRUE" ] && echo "List of selected servers (${#SERVERS[@]}):"
+
+  for server in $(eval echo \${SERVERS[*]}); do
+    # rewrite the filess array - transfer all files in one SSH session
+    [ "${#FILES[@]}" -ne 0 ] && RFILES=( "$(for file in "${FILES[@]}"; do echo ${server}:${file};done)" )
+    
+    test ! -d ~/scp-local-copy/"$server" && mkdir -p ~/scp-local-copy/$server
+    
+    [ "$LIST" = "TRUE" ] && echo "$server" && break
+    [ "${FILES[*]}" != "" ] && [ "$TARGET" = "FALSE" ] && echo "Warning: please specify a target with the options [-s|-r] for sending or receiving files." >&2 && exit 1
+
+    [ "$VERBOSE" = "TRUE" ] && echo
+    [ "$VERBOSE" = "TRUE" ] && echo "************ $server ************"
+
+    [ "${COMMANDS[*]}" != "" ] && [ "$VERBOSE" != "TRUE" ] && ssh $server "${COMMANDS[*]}"
+    [ "${COMMANDS[*]}" != "" ] && [ "$VERBOSE" = "TRUE" ] && echo "running commands..." && ssh $server "${COMMANDS[*]}" && echo
+    [ "${FILES[*]}" != "" ] && [ "$TARGET" = "REMOTE" ] && [ "$VERBOSE" != "TRUE" ] && scp -qr "${FILES[@]}" "$server:~/"
+    [ "${FILES[*]}" != "" ] && [ "$TARGET" = "REMOTE" ] && [ "$VERBOSE" = "TRUE" ] && echo "sending files..." && scp -r "${FILES[@]}" "$server:~/" && echo
+    [ "${FILES[*]}" != "" ] && [ "$TARGET" = "LOCAL" ] && [ "$VERBOSE" != "TRUE" ] && scp -qr  ${RFILES[@]} ~/scp-local-copy/"$server"
+    [ "${FILES[*]}" != "" ] && [ "$TARGET" = "LOCAL" ] && [ "$VERBOSE" = "TRUE" ] && echo "receiving files..." && scp -r  ${RFILES[@]} ~/scp-local-copy/"$server" && echo
+  done
+
 else
-  echo "Usage: doon-ng [-a] [-A] [-n |-N  NODE] [-g |-G GROUP] [-c COMMAND(S) |-f FILE] [-r |-s] [-p] [-l]"
-  echo " -a: adds all nodes from all known groups to your selection"
-  echo " -A: prints a list of all available groups and servers assigned to them"
-  echo " -n: node to add to your selection; you can enter one node name per argument - multiple arguments are allowed"
-  echo " -N: node to be removed from your selection; you can enter one node name per argument - multiple arguments are allowed"
-  echo " -g: group of servers to add to your selection; you can enter one group name per argument - multiple arguments are allowed"
-  echo " -G: group of servers to be removed from your selection; you can enter one node name per argument - multiple arguments are allowed"
-  echo " -c: command you whish to execute on the remote hosts - multiple arguments allowed; multiple commads allowed in one argument"
-  echo "     pay attention to quote correctly!!!!"
-  echo " -f: the file you like to transfer to or from server(s); one file per argument - multiple arguments allowed"
-  echo " -s: sends the files to your home directory on remote servers in combination with -f"
-  echo " -r: receives the files from remote servers in combination with -f and stores them in ~/scp-local-copy/\$server/"
-  echo " -p: run the command(s) in parallel on all hosts using SCREEN"
-  echo " -l: prints a list of selected server(s)"
+  echo "Missing arguments or unknown condition...! Use '$0 -h' to get a help screen"
+  exit 1
 fi
-echo
-echo
+
+exit 0
